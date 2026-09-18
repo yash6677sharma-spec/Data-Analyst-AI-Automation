@@ -1,0 +1,377 @@
+{
+  "name": "Upload File to Excel Report",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "Upload a file for Excel analysis",
+        "formDescription": "Upload a CSV or Excel (.xlsx) file. It will be cleaned and emailed back as a formatted Excel report with a business-insights summary.",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Data File",
+              "fieldType": "file",
+              "multipleFiles": false,
+              "acceptFileTypes": ".csv,.xlsx",
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1c8f0f2-1111-4a1a-9c0e-0f0a1b2c3d4e",
+      "name": "Upload Data File",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.6,
+      "position": [
+        -448,
+        0
+      ],
+      "webhookId": "b8b1cde6-6b41-4e58-80e0-5b314e0878f3"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Find the uploaded file's binary, detect its extension, and re-key it to 'data'\nconst item = $input.first();\nconst binary = item.binary || {};\nconst keys = Object.keys(binary);\nif (keys.length === 0) {\n  throw new Error('No file was uploaded in the form submission.');\n}\nconst file = binary[keys[0]];\nconst fileName = file.fileName || '';\nconst fileExt = (fileName.split('.').pop() || '').toLowerCase();\nreturn [{ json: { fileName, fileExt }, binary: { data: file } }];"
+      },
+      "id": "c2d3e4f5-2222-4b2b-8d1f-1a2b3c4d5e6f",
+      "name": "Prepare File",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -224,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.fileExt }}",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "rightValue": "csv"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "csv"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "excel"
+        }
+      },
+      "id": "d3e4f5a6-3333-4c3c-9e2a-2b3c4d5e6f70",
+      "name": "Route By File Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "options": {
+          "headerRow": true
+        }
+      },
+      "id": "e4f5a6b7-4444-4d4d-8f3b-3c4d5e6f7081",
+      "name": "Extract CSV",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        224,
+        -144
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Clean the extracted rows (equivalent to a Pandas cleaning step)\nconst rows = $input.all().map(i => i.json);\n\nconst cleaned = [];\nconst seen = new Set();\n\nfor (const row of rows) {\n  const out = {};\n  for (const [key, value] of Object.entries(row)) {\n    let v = value;\n    // Trim strings and normalize empty values to null\n    if (typeof v === 'string') {\n      v = v.trim();\n      if (v === '') v = null;\n    }\n    out[key] = v;\n  }\n\n  // Drop rows where every value is null/empty\n  const hasValue = Object.values(out).some(v => v !== null && v !== undefined);\n  if (!hasValue) continue;\n\n  // Drop exact duplicate rows\n  const sig = JSON.stringify(out);\n  if (seen.has(sig)) continue;\n  seen.add(sig);\n\n  cleaned.push(out);\n}\n\nreturn cleaned.map(json => ({ json }));"
+      },
+      "id": "06eff446-47cf-4bc3-b134-25173e8247d5",
+      "name": "Clean Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "options": {
+          "headerRow": true
+        }
+      },
+      "id": "f5a6b7c8-5555-4e5e-9a4c-4d5e6f708192",
+      "name": "Extract Excel",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        224,
+        144
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "options": {
+          "fileName": "=report_{{ $now.toFormat(\"yyyy-MM-dd\") }}.xlsx",
+          "headerRow": true,
+          "sheetName": "Report"
+        }
+      },
+      "id": "bb83eee2-09b3-46fd-bd1e-74b0a2f16eab",
+      "name": "Generate Excel Report",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        672,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build an auto-computed business-insights summary from the cleaned rows.\nconst rows = $('Clean Data').all().map(i => i.json);\nconst insights = [];\n\ninsights.push({ Metric: 'Total Rows', Column: '(all)', Value: rows.length });\n\nif (rows.length === 0) {\n  return insights.map(json => ({ json }));\n}\n\n// Determine all column names present\nconst columns = Array.from(rows.reduce((set, r) => {\n  Object.keys(r).forEach(k => set.add(k));\n  return set;\n}, new Set()));\n\nconst isNumeric = (v) => v !== null && v !== undefined && v !== '' && !isNaN(Number(v));\n\nfor (const col of columns) {\n  const values = rows.map(r => r[col]).filter(v => v !== null && v !== undefined && v !== '');\n  const numericVals = values.filter(isNumeric).map(Number);\n\n  // Treat as numeric column if a clear majority of non-empty values are numbers\n  if (values.length > 0 && numericVals.length >= values.length * 0.7) {\n    const sum = numericVals.reduce((a, b) => a + b, 0);\n    const avg = numericVals.length ? sum / numericVals.length : 0;\n    const round = (n) => Math.round(n * 100) / 100;\n    insights.push({ Metric: 'Sum', Column: col, Value: round(sum) });\n    insights.push({ Metric: 'Average', Column: col, Value: round(avg) });\n    insights.push({ Metric: 'Min', Column: col, Value: round(Math.min(...numericVals)) });\n    insights.push({ Metric: 'Max', Column: col, Value: round(Math.max(...numericVals)) });\n    insights.push({ Metric: 'Count (non-empty)', Column: col, Value: numericVals.length });\n  } else if (values.length > 0) {\n    // Categorical column: distinct count + top value\n    const freq = {};\n    for (const v of values) {\n      const key = String(v);\n      freq[key] = (freq[key] || 0) + 1;\n    }\n    const sorted = Object.entries(freq).sort((a, b) => b[1] - a[1]);\n    insights.push({ Metric: 'Distinct Values', Column: col, Value: sorted.length });\n    if (sorted.length) {\n      insights.push({ Metric: 'Top Value', Column: col, Value: sorted[0][0] });\n      insights.push({ Metric: 'Top Value Count', Column: col, Value: sorted[0][1] });\n    }\n  }\n}\n\nreturn insights.map(json => ({ json }));"
+      },
+      "id": "a7b8c9d0-6666-4f6f-8b5d-5e6f70819203",
+      "name": "Compute Insights",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        192
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "xlsx",
+        "binaryPropertyName": "insights",
+        "options": {
+          "fileName": "=insights_{{ $now.toFormat(\"yyyy-MM-dd\") }}.xlsx",
+          "headerRow": true,
+          "sheetName": "Insights"
+        }
+      },
+      "id": "b8c9d0e1-7777-4a7a-9c6e-6f7081920314",
+      "name": "Generate Insights Excel",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        1120,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Combine both generated Excel files onto a single item for the email.\nconst insightsBin = $('Generate Insights Excel').first().binary.insights;\nconst dataBin = $('Generate Excel Report').first().binary.data;\nreturn [{ json: {}, binary: { data: dataBin, insights: insightsBin } }];"
+      },
+      "id": "c9d0e1f2-8888-4b8b-8d7f-708192031425",
+      "name": "Assemble Attachments",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1344,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "sendTo": "yash6677sharma@gmail.com",
+        "subject": "=Your Excel Report & Insights - {{ $now.toFormat(\"yyyy-MM-dd\") }}",
+        "message": "=Hi,<br><br>Attached are two Excel files generated from your uploaded file on {{ $now.toFormat(\"MMMM d, yyyy\") }}:<br><br>1. <b>Cleaned data report</b> - the tidied dataset.<br>2. <b>Insights summary</b> - auto-computed business KPIs (totals, averages, min/max, top categories) per column.<br><br>Regards,<br>Automated Reporting",
+        "options": {
+          "attachmentsUi": {
+            "attachmentsBinary": [
+              {},
+              {
+                "property": "insights"
+              }
+            ]
+          }
+        }
+      },
+      "id": "10170a69-454e-4222-9ed5-5a33a6c05cd9",
+      "name": "Email Report",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        896,
+        0
+      ],
+      "webhookId": "f1333071-50c4-4159-aa36-01c8d06ba81c",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "bPRTAbV2DAQltt8q",
+          "name": "Gmail account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Upload Data File": {
+      "main": [
+        [
+          {
+            "node": "Prepare File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare File": {
+      "main": [
+        [
+          {
+            "node": "Route By File Type",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route By File Type": {
+      "main": [
+        [
+          {
+            "node": "Extract CSV",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Clean Data",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Extract Excel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract CSV": {
+      "main": [
+        [
+          {
+            "node": "Clean Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Clean Data": {
+      "main": [
+        [
+          {
+            "node": "Generate Excel Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Excel": {
+      "main": [
+        [
+          {
+            "node": "Clean Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Excel Report": {
+      "main": [
+        [
+          {
+            "node": "Compute Insights",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compute Insights": {
+      "main": [
+        [
+          {
+            "node": "Generate Insights Excel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Insights Excel": {
+      "main": [
+        [
+          {
+            "node": "Assemble Attachments",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Assemble Attachments": {
+      "main": [
+        [
+          {
+            "node": "Email Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "versionId": "e9c72d78-4584-4e90-ae59-5fd564312db5",
+  "meta": {
+    "instanceId": "04be18cbcfed96455ea30fafb79da7e30406015a0649d75687e5263d9cdc0e6d"
+  },
+  "nodeGroups": [
+    {
+      "id": "f9eb9533-8f2b-4843-9fc0-eb5559c7356c",
+      "name": "Deliver",
+      "nodeIds": [
+        "c9d0e1f2-8888-4b8b-8d7f-708192031425",
+        "10170a69-454e-4222-9ed5-5a33a6c05cd9"
+      ],
+      "description": "Combines both Excel files and emails them via Gmail."
+    }
+  ],
+  "id": "7bFtnMjuRgXHaRnx",
+  "tags": []
+}
